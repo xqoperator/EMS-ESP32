@@ -19,6 +19,14 @@
 #include "analogsensor.h"
 #include "emsesp.h"
 
+#ifdef TWI_EXPANDER
+#include "Adafruit_XCA9554.h"
+#define is_expander(gpio) (((gpio) >= 100) && ((gpio) <= 107))
+#define to_expander(gpio) ((gpio) - 100)
+Adafruit_XCA9554 expander;
+bool expander_initialized = FALSE;
+#endif
+
 namespace emsesp {
 
 uuid::log::Logger    AnalogSensor::logger_{F_(analogsensor), uuid::log::Facility::DAEMON};
@@ -56,6 +64,35 @@ void IRAM_ATTR AnalogSensor::freqIrq2() {
 #endif
 
 void AnalogSensor::start(const bool factory_settings) {
+
+#ifdef TWI_EXPANDER
+    TwoWire expander_twi = TwoWire(0);
+    bool twi_status = expander_twi.begin(TWI_SDA,TWI_SCL,400000UL);
+    if(twi_status) {
+        if(expander.begin(TWI_EXPANDER_ADDR,&expander_twi)) {
+            bool res = TRUE;
+            res &= expander.pinMode(0,OUTPUT);
+            res &= expander.pinMode(1,OUTPUT);
+            res &= expander.pinMode(2,OUTPUT);
+            res &= expander.pinMode(3,OUTPUT);
+            res &= expander.pinMode(4,OUTPUT);
+            res &= expander.pinMode(5,OUTPUT);
+            res &= expander.pinMode(6,OUTPUT);
+            res &= expander.pinMode(7,OUTPUT);
+            if(res) {
+                expander_initialized = TRUE;
+                LOG_INFO("i2c expander OK");
+            } else {
+                LOG_ERROR("expander.pinMode() failed");
+            }
+        } else {
+            LOG_ERROR("expander.begin(0x20,&TWI(42,41,400k)) error");
+        }
+    } else {
+        LOG_ERROR("TWI Init Error.");
+    }
+#endif
+
     if (factory_settings && EMSESP::system_.board_profile() == "E32V2_2") {
         EMSESP::webCustomizationService.update([&](WebCustomization & settings) {
             auto newSensor = AnalogCustomization();
@@ -301,8 +338,21 @@ void AnalogSensor::reload(bool get_nvs) {
             EMSESP_RGB_WRITE(sensor.gpio(), 2 * r, 2 * g, 2 * b);
             LOG_DEBUG("RGB set to %d, %d, %d", r, g, b);
         } else if (sensor.type() == AnalogType::DIGITAL_OUT) {
-            LOG_DEBUG("Digital Write on GPIO %02d", sensor.gpio());
-            pinMode(sensor.gpio(), OUTPUT);
+#ifdef TWI_EXPANDER
+            if(is_expander(sensor.gpio())) {
+                uint8_t edout = to_expander(sensor.gpio());
+                if(expander_initialized) {
+                    expander.pinMode(edout,OUTPUT);
+                    LOG_INFO("pinMode, twi expander %02d (reload,pinMode)",edout);
+                } else {
+                    LOG_ERROR("pinMode, twi expander uninitialized, GPIO %02d", edout);
+                }
+            } else
+#endif
+            {
+                LOG_DEBUG("Digital Write on GPIO %02d", sensor.gpio());
+                pinMode(sensor.gpio(), OUTPUT);
+            }
 #if CONFIG_IDF_TARGET_ESP32
             if (sensor.gpio() == 25 || sensor.gpio() == 26) {
                 if (sensor.offset() > 255) {
@@ -335,7 +385,16 @@ void AnalogSensor::reload(bool get_nvs) {
                     sensor.set_uom(2);
                 }
                 sensor.set_offset(sensor.offset() > 0 ? 1 : 0);
-                digitalWrite(sensor.gpio(), (sensor.offset() == 0) ^ (sensor.factor() > 0));
+#ifdef TWI_EXPANDER
+                if(is_expander(sensor.gpio())) {
+                    uint8_t edout = to_expander(sensor.gpio());
+                    LOG_INFO("Digital Write to i2c expander %02d (reload,digitalWrite)",edout);
+                    expander.digitalWrite( edout, (sensor.offset() == 0) ^ (sensor.factor() > 0));
+                } else 
+#endif
+                {
+                    digitalWrite(sensor.gpio(), (sensor.offset() == 0) ^ (sensor.factor() > 0));
+                }
                 sensor.set_value(sensor.offset());
             }
             publish_sensor(sensor);
@@ -988,8 +1047,24 @@ bool AnalogSensor::command_setvalue(const char * value, const int8_t gpio) {
                     if (v == 0 || v == 1) {
                     sensor.set_offset(v);
                     sensor.set_value(v);
-                    pinMode(sensor.gpio(), OUTPUT);
-                    digitalWrite(sensor.gpio(), (sensor.offset() == 0) ^ (sensor.factor() > 0));
+#ifdef TWI_EXPANDER
+                    if(is_expander(sensor.gpio())) {
+                        if(expander_initialized) {
+                            uint8_t edout = to_expander(sensor.gpio());
+                            LOG_INFO("command_setvalue twi expander channel %02d v=%d",edout,v);
+                            bool r1 = expander.pinMode(edout, OUTPUT);
+                            if(!r1) LOG_ERROR("twi expander.pinMode %02d failed",edout);
+                            bool r2 = expander.digitalWrite(edout, (sensor.offset() == 0) ^ (sensor.factor() > 0));
+                            if(!r2) LOG_ERROR("twi expander.digitalWrite %02d failed",edout);
+                        } else {
+                            LOG_ERROR("twi expander not initialized %02d",sensor.gpio());
+                        }
+                    } else 
+#endif
+                    {
+                        pinMode(sensor.gpio(), OUTPUT);
+                        digitalWrite(sensor.gpio(), (sensor.offset() == 0) ^ (sensor.factor() > 0));
+                    }
                     if (sensor.uom() == 0 && EMSESP::nvs_.getChar(sensor.name()) != (int8_t)sensor.offset()) {
                         EMSESP::nvs_.putChar(sensor.name(), (int8_t)sensor.offset());
                     }

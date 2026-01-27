@@ -2960,7 +2960,14 @@ void System::set_valid_system_gpios() {
     // GPIO11 - GPIO19 = ADC analog input only pins
     // GPIO47 - GPIO48 = valid on a Wemos S3
     // GPIO8 = used by Liligo S3 board profile for Rx
-    valid_system_gpios_ = string_range_to_vector("0-48", "3, 45-46, 26-32, 33-37, 19-20, 22-25");
+
+    // GPIO46 - buzzer
+#ifdef TWI_EXPANDER
+    // GPIO100-107 twi expander
+    valid_system_gpios_ = string_range_to_vector("0-48,100-107", "3, 45, 26-32, 33-37, 19-20, 22-25");
+#else
+    valid_system_gpios_ = string_range_to_vector("0-48", "3, 45, 26-32, 33-37, 19-20, 22-25");
+#endif
 
 #elif CONFIG_IDF_TARGET_ESP32
     // https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/gpio.html
